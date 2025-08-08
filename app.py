@@ -216,15 +216,29 @@ async def verify_slack_signature(request: Request, body: bytes = None) -> bool:
 openai_assistant = OpenAIAssistant()
 slack_bot = SlackBot()
 
+logger.info("=== Slack GPT Bot Starting ===")
+logger.info(f"OpenAI API Key configured: {'Yes' if OPENAI_API_KEY else 'No'}")
+logger.info(f"OpenAI Assistant ID configured: {'Yes' if OPENAI_ASSISTANT_ID else 'No'}")
+logger.info(f"Slack Bot Token configured: {'Yes' if SLACK_BOT_TOKEN else 'No'}")
+logger.info(f"Slack Signing Secret configured: {'Yes' if SLACK_SIGNING_SECRET else 'No'}")
+logger.info("=== Bot initialization complete ===")
+
 @app.get("/")
 async def root():
     """Root endpoint for health check"""
+    logger.info("Root endpoint accessed")
     return {
         "status": "healthy",
         "message": "Slack GPT Bot is running",
         "openai_configured": bool(OPENAI_API_KEY and OPENAI_ASSISTANT_ID),
         "slack_configured": bool(SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET)
     }
+
+@app.get("/test")
+async def test():
+    """Simple test endpoint"""
+    logger.info("Test endpoint accessed")
+    return {"message": "Bot is running", "timestamp": time.time()}
 
 @app.post("/slack/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks):
