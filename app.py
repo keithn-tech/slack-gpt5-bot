@@ -182,7 +182,7 @@ class SlackBot:
             if not result.get("ok"):
                 raise Exception(f"Slack API error: {result.get('error')}")
 
-async def verify_slack_signature(request: Request) -> bool:
+async def verify_slack_signature(request: Request, body: bytes = None) -> bool:
     """Verify Slack request signature"""
     if not SLACK_SIGNING_SECRET:
         logger.warning("No Slack signing secret configured, skipping verification")
@@ -201,7 +201,8 @@ async def verify_slack_signature(request: Request) -> bool:
         return False
     
     # Verify signature
-    body = await request.body()  # ✅ FIXED: await the body
+    if body is None:
+        body = await request.body()  # ✅ FIXED: await the body
     sig_basestring = f"v0:{timestamp}:{body.decode()}"
     expected_signature = "v0=" + hmac.new(
         SLACK_SIGNING_SECRET.encode(),
@@ -230,13 +231,18 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
     """Handle Slack events"""
     logger.info("Received Slack event")
     
-    # Verify Slack signature
-    if not await verify_slack_signature(request):
+    # Get the raw body for signature verification
+    raw_body = await request.body()
+    
+    # Verify Slack signature first
+    if not await verify_slack_signature(request, raw_body):
         logger.error("Invalid Slack signature")
         raise HTTPException(status_code=401, detail="Invalid signature")
     
-    # Parse the request body
-    body = await request.json()
+    # Parse the request body from the raw body we already have
+    import json
+    body = json.loads(raw_body.decode())
+    logger.info(f"SLACK EVENT RECEIVED: {body}")
     logger.info(f"Event type: {body.get('type')}")
     
     # Handle URL verification challenge
