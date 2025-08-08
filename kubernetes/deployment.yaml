@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slack-gpt-bot
+  labels:
+    app: slack-gpt-bot
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: slack-gpt-bot
+  template:
+    metadata:
+      labels:
+        app: slack-gpt-bot
+    spec:
+      containers:
+      - name: slack-bot
+        image: slack-gpt-bot:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: slack-bot-secrets
+              key: openai-api-key
+        - name: OPENAI_ASSISTANT_ID
+          valueFrom:
+            secretKeyRef:
+              name: slack-bot-secrets
+              key: openai-assistant-id
+        - name: SLACK_BOT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: slack-bot-secrets
+              key: slack-bot-token
+        - name: SLACK_SIGNING_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: slack-bot-secrets
+              key: slack-signing-secret
+        - name: HOST
+          value: "0.0.0.0"
+        - name: PORT
+          value: "8000"
+        volumeMounts:
+        - name: memory-storage
+          mountPath: /app/thread_memory.json
+          subPath: thread_memory.json
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: memory-storage
+        persistentVolumeClaim:
+          claimName: slack-bot-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: slack-bot-service
+spec:
+  selector:
+    app: slack-gpt-bot
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8000
+  type: LoadBalancer
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: slack-bot-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi 
