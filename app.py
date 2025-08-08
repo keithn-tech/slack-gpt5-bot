@@ -166,16 +166,21 @@ class SlackBot:
         }
     
     async def post_message(self, channel: str, thread_ts: str, text: str) -> None:
-        """Post a message to a Slack thread"""
+        """Post a message to a Slack channel or thread"""
+        message_data = {
+            "channel": channel,
+            "text": text
+        }
+        
+        # Only add thread_ts if it's provided (for threading)
+        if thread_ts:
+            message_data["thread_ts"] = thread_ts
+        
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "https://slack.com/api/chat.postMessage",
                 headers=self.headers,
-                json={
-                    "channel": channel,
-                    "thread_ts": thread_ts,
-                    "text": text
-                }
+                json=message_data
             )
             response.raise_for_status()
             result = response.json()
@@ -325,13 +330,13 @@ async def process_app_mention(event: dict):
                 content = latest_message["content"][0]["text"]["value"]
                 
                 # Post response to Slack
-                await slack_bot.post_message(channel, thread_ts, content)
+                await slack_bot.post_message(channel, None, content)
                 logger.info("Successfully posted response to Slack")
             else:
-                await slack_bot.post_message(channel, thread_ts, "I'm sorry, I couldn't generate a response.")
+                await slack_bot.post_message(channel, None, "I'm sorry, I couldn't generate a response.")
                 logger.warning("No assistant message found")
         else:
-            await slack_bot.post_message(channel, thread_ts, "I'm sorry, there was an error processing your request.")
+            await slack_bot.post_message(channel, None, "I'm sorry, there was an error processing your request.")
             logger.error("Run failed to complete")
     
     except Exception as e:
@@ -339,8 +344,7 @@ async def process_app_mention(event: dict):
         # Try to post error message to Slack
         try:
             channel = event.get("channel")
-            thread_ts = event.get("thread_ts") or event.get("ts")
-            await slack_bot.post_message(channel, thread_ts, "I'm sorry, there was an error processing your request.")
+            await slack_bot.post_message(channel, None, "I'm sorry, there was an error processing your request.")
         except:
             logger.error("Failed to post error message to Slack")
 
