@@ -9,6 +9,11 @@ from dotenv import load_dotenv
 import hmac
 import hashlib
 import time
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -20,6 +25,12 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_ASSISTANT_ID = os.getenv("OPENAI_ASSISTANT_ID")
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
+
+# Log configuration status
+logger.info(f"OpenAI API Key configured: {'Yes' if OPENAI_API_KEY else 'No'}")
+logger.info(f"OpenAI Assistant ID configured: {'Yes' if OPENAI_ASSISTANT_ID else 'No'}")
+logger.info(f"Slack Bot Token configured: {'Yes' if SLACK_BOT_TOKEN else 'No'}")
+logger.info(f"Slack Signing Secret configured: {'Yes' if SLACK_SIGNING_SECRET else 'No'}")
 
 # Memory file path
 MEMORY_FILE = "thread_memory.json"
@@ -36,7 +47,7 @@ class ThreadMemory:
                     return json.load(f)
             return {}
         except Exception as e:
-            print(f"Error loading memory: {e}")
+            logger.error(f"Error loading memory: {e}")
             return {}
     
     @staticmethod
@@ -46,7 +57,7 @@ class ThreadMemory:
             with open(MEMORY_FILE, 'w') as f:
                 json.dump(memory, f, indent=2)
         except Exception as e:
-            print(f"Error saving memory: {e}")
+            logger.error(f"Error saving memory: {e}")
     
     @staticmethod
     def get_thread_id(user_id: str) -> Optional[str]:
@@ -171,23 +182,26 @@ class SlackBot:
             if not result.get("ok"):
                 raise Exception(f"Slack API error: {result.get('error')}")
 
-def verify_slack_signature(request: Request) -> bool:
+async def verify_slack_signature(request: Request) -> bool:
     """Verify Slack request signature"""
     if not SLACK_SIGNING_SECRET:
+        logger.warning("No Slack signing secret configured, skipping verification")
         return True  # Skip verification if no secret configured
     
     timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
     signature = request.headers.get("X-Slack-Signature", "")
     
     if not timestamp or not signature:
+        logger.warning("Missing Slack signature headers")
         return False
     
     # Check if request is too old (replay attack protection)
     if abs(int(time.time()) - int(timestamp)) > 60 * 5:
+        logger.warning("Request timestamp too old")
         return False
     
     # Verify signature
-    body = request.body()
+    body = await request.body()  # ✅ FIXED: await the body
     sig_basestring = f"v0:{timestamp}:{body.decode()}"
     expected_signature = "v0=" + hmac.new(
         SLACK_SIGNING_SECRET.encode(),
@@ -201,18 +215,33 @@ def verify_slack_signature(request: Request) -> bool:
 openai_assistant = OpenAIAssistant()
 slack_bot = SlackBot()
 
+@app.get("/")
+async def root():
+    """Root endpoint for health check"""
+    return {
+        "status": "healthy",
+        "message": "Slack GPT Bot is running",
+        "openai_configured": bool(OPENAI_API_KEY and OPENAI_ASSISTANT_ID),
+        "slack_configured": bool(SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET)
+    }
+
 @app.post("/slack/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks):
     """Handle Slack events"""
+    logger.info("Received Slack event")
+    
     # Verify Slack signature
-    if not verify_slack_signature(request):
+    if not await verify_slack_signature(request):
+        logger.error("Invalid Slack signature")
         raise HTTPException(status_code=401, detail="Invalid signature")
     
     # Parse the request body
     body = await request.json()
+    logger.info(f"Event type: {body.get('type')}")
     
     # Handle URL verification challenge
     if body.get("type") == "url_verification":
+        logger.info("Handling URL verification challenge")
         return {"challenge": body.get("challenge")}
     
     # Handle events
@@ -221,6 +250,7 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
         
         # Only process app_mention events
         if event.get("type") == "app_mention":
+            logger.info("Processing app mention event")
             background_tasks.add_task(process_app_mention, event)
     
     return {"status": "ok"}
@@ -228,24 +258,32 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 async def process_app_mention(event: dict):
     """Process app mention events"""
     try:
+        logger.info("Starting to process app mention")
+        
         # Extract event data
         user_id = event.get("user")
         channel = event.get("channel")
         thread_ts = event.get("thread_ts") or event.get("ts")
         text = event.get("text", "")
         
+        logger.info(f"Processing message from user {user_id} in channel {channel}")
+        
         # Remove bot mention from text
         # Assuming bot is mentioned with @bot_name
         text = text.split(">", 1)[1].strip() if ">" in text else text
         
         if not text:
+            logger.warning("Empty message text")
             return
         
         # Get or create thread ID for this user
         thread_id = ThreadMemory.get_thread_id(user_id)
         if not thread_id:
+            logger.info(f"Creating new thread for user {user_id}")
             thread_id = await openai_assistant.create_thread()
             ThreadMemory.set_thread_id(user_id, thread_id)
+        else:
+            logger.info(f"Using existing thread {thread_id} for user {user_id}")
         
         # Add user message to thread
         await openai_assistant.add_message(thread_id, text)
@@ -268,31 +306,42 @@ async def process_app_mention(event: dict):
                 
                 # Post response to Slack
                 await slack_bot.post_message(channel, thread_ts, content)
+                logger.info("Successfully posted response to Slack")
             else:
                 await slack_bot.post_message(channel, thread_ts, "I'm sorry, I couldn't generate a response.")
+                logger.warning("No assistant message found")
         else:
             await slack_bot.post_message(channel, thread_ts, "I'm sorry, there was an error processing your request.")
+            logger.error("Run failed to complete")
     
     except Exception as e:
-        print(f"Error processing app mention: {e}")
+        logger.error(f"Error processing app mention: {e}")
         # Try to post error message to Slack
         try:
             channel = event.get("channel")
             thread_ts = event.get("thread_ts") or event.get("ts")
             await slack_bot.post_message(channel, thread_ts, "I'm sorry, there was an error processing your request.")
         except:
-            pass
+            logger.error("Failed to post error message to Slack")
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy"}
+    return {
+        "status": "healthy",
+        "timestamp": time.time(),
+        "openai_configured": bool(OPENAI_API_KEY and OPENAI_ASSISTANT_ID),
+        "slack_configured": bool(SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET)
+    }
 
 if __name__ == "__main__":
     import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    host = os.getenv("HOST", "0.0.0.0")
+    logger.info(f"Starting server on {host}:{port}")
     uvicorn.run(
         "app:app",
-        host=os.getenv("HOST", "0.0.0.0"),
-        port=int(os.getenv("PORT", 8000)),
-        reload=True
+        host=host,
+        port=port,
+        reload=False  # Disable reload in production
     ) 
