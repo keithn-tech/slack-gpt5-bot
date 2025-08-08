@@ -165,17 +165,18 @@ class SlackBot:
             "Content-Type": "application/json"
         }
     
-    async def post_message(self, channel: str, thread_ts: str, text: str) -> None:
+    async def post_message(self, channel: str, thread_ts: str = None, text: str = None) -> None:
         """Post a message to a Slack channel or thread"""
         message_data = {
             "channel": channel,
             "text": text
         }
         
-        # Only add thread_ts if it's provided (for threading)
-        if thread_ts:
+        # Only add thread_ts if it's provided and not None (for threading)
+        if thread_ts is not None:
             message_data["thread_ts"] = thread_ts
         
+        logger.info(f"Posting message to channel {channel}: {text[:50]}...")
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "https://slack.com/api/chat.postMessage",
@@ -184,6 +185,7 @@ class SlackBot:
             )
             response.raise_for_status()
             result = response.json()
+            logger.info(f"Slack API response: {result}")
             if not result.get("ok"):
                 raise Exception(f"Slack API error: {result.get('error')}")
 
@@ -276,7 +278,10 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
         # Only process app_mention events
         if event.get("type") == "app_mention":
             logger.info("Processing app mention event")
+            logger.info(f"Event details: {event}")
             background_tasks.add_task(process_app_mention, event)
+        else:
+            logger.info(f"Event type {event.get('type')} not processed")
     
     return {"status": "ok"}
 
